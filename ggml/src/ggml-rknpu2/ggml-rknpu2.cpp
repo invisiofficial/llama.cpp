@@ -1,6 +1,7 @@
 #include "ggml-backend-impl.h"
 #include "ggml-rknpu2.h"
 #include "ggml-impl.h"
+#include "ggml-quants.h"
 
 #include <cassert>
 #include <cstring>
@@ -103,7 +104,7 @@ struct ggml_rknpu2_matmul_kernel {
 static struct ggml_rknpu2_matmul_kernel matmul_kernels[GGML_RKNPU2_MAX_MATMUL_KERNELS];
 static int matmul_kernels_count = 0;
 
-static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_find(int m, int k, int n, rknn_tensor_type type) {
+static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_find(int m, int k, int n, rknn_matmul_type type) {
     for (int i = 0; i < matmul_kernels_count; i++) {
         struct ggml_rknpu2_matmul_kernel* kernel = &matmul_kernels[i];
         if (kernel->matmul_info.M == m && kernel->matmul_info.K == k && kernel->matmul_info.N == n &&
@@ -113,7 +114,7 @@ static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_find(int m, i
     return NULL;
 }
 
-static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_create(int m, int k, int n, rknn_tensor_type type) {
+static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_create(int m, int k, int n, rknn_matmul_type type) {
     struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_find(m, k, n, type);
     if (kernel != NULL) return kernel;
 
@@ -125,8 +126,8 @@ static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_create(int m,
     kernel->matmul_info.K = k;
     kernel->matmul_info.N = n;
     kernel->matmul_info.type = type;
-    kernel->matmul_info.native_layout = 1;
-    kernel->matmul_info.perf_layout = 0;
+    kernel->matmul_info.B_layout = RKNN_MM_LAYOUT_NATIVE;
+    kernel->matmul_info.AC_layout = RKNN_MM_LAYOUT_NORM;
 
     int ret = rknn_matmul_create(&kernel->matmul_ctx, &kernel->matmul_info, &kernel->matmul_io_attr);
     GGML_ASSERT(ret == 0);
@@ -165,20 +166,20 @@ static void ggml_rknpu2_reorder_q8_0_to_native_int8(
     GGML_ASSERT(d_max > 0.0f);
 
     const size_t rknpu_strides[4] = {k / 32 * 32 * 32, 32 * 32, 32, 1};
-    const ggml_type_traits_t q8_0_traits = ggml_get_type_traits(GGML_TYPE_Q8_0);
+    const auto q8_0_traits = ggml_get_type_traits(GGML_TYPE_Q8_0);
 
-    const size_t nb_per_row = k / QK8_0; // number of blocks per row
+    const size_t nb_per_row = k / GGML_QK8_0;
     const float scale_factor = 127.0f / d_max;
 
     // The source tensor is laid out as [N, K]
     for (size_t row = 0; row < n; ++row) {
         for (size_t col_block = 0; col_block < nb_per_row; ++col_block) {
-            const size_t k_base = col_block * QK8_0;
-            const ggml_block_q8_0 * block = (const ggml_block_q8_0 *)((const char *)src_q8_0 + (row * nb_per_row + col_block) * q8_0_traits.type_size);
+            const size_t k_base = col_block * GGML_QK8_0;
+            const block_q8_0 * block = (const block_q8_0 *)((const char *)src_q8_0 + (row * nb_per_row + col_block) * q8_0_traits.size);
 
             const float d_local = ggml_fp16_to_fp32(block->d);
 
-            for (size_t i = 0; i < QK8_0; ++i) {
+            for (size_t i = 0; i < GGML_QK8_0; ++i) {
                 const float val_f32 = block->qs[i] * d_local;
                 const int8_t val_int8 = (int8_t)roundf(fminf(fmaxf(val_f32 * scale_factor, -127.0f), 127.0f));
 
@@ -223,7 +224,7 @@ struct ggml_backend_rknpu2_buffer_context {
     int fd = -1;
     void * va = nullptr;
     size_t size = 0;
-    std::vector<ggml_backend_rknpu2_tensor_extra*> created_extras; // Добавляем список
+    std::vector<ggml_backend_rknpu2_tensor_extra*> created_extras;
 };
 
 //================================================================================
@@ -248,7 +249,7 @@ static void ggml_backend_rknpu2_buffer_free_buffer(ggml_backend_buffer_t buffer)
     if (!ctx->created_extras.empty()) {
         rknn_matmul_ctx temp_ctx;
         rknn_matmul_info temp_info = {};
-        temp_info.type = RKNN_TENSOR_INT8;
+        temp_info.type = RKNN_INT8_MM_INT8_TO_INT32;
         if (rknn_matmul_create(&temp_ctx, &temp_info, nullptr) == 0) {
             for (auto* extra : ctx->created_extras) {
                 if (extra && extra->b_mem) {
@@ -307,7 +308,7 @@ static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t 
 
     // 2. Трансформация в нативный INT8 формат RKNPU
     std::vector<int8_t> reordered_data(nelements);
-    ggml_rknpu2_transposed_to_native_int8(reordered_data.data(), fdata.data(), k, n);
+    //ggml_rknpu2_transposed_to_native_int8(reordered_data.data(), fdata.data(), k, n);
 
     // 3. Создаем ядро, чтобы получить matmul_ctx и размер B
     struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(1, k, n, RKNN_TENSOR_INT8);
@@ -418,8 +419,8 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
                 // 1. НАХОДИМ ГЛОБАЛЬНЫЙ МАСШТАБ (d_max)
                 float d_max = 0.0f;
                 const size_t nelements = ggml_nelements(src0);
-                const size_t n_blocks = nelements / QK8_0;
-                const ggml_block_q8_0 * blocks = (const ggml_block_q8_0 *)src0->data;
+                const size_t n_blocks = nelements / GGML_QK8_0;
+                const block_q8_0 * blocks = (const block_q8_0 *)src0->data;
 
                 for (size_t j = 0; j < n_blocks; ++j) {
                     float d_local = fabsf(ggml_fp16_to_fp32(blocks[j].d));
