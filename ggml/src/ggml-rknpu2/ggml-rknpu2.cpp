@@ -235,43 +235,6 @@ static void ggml_backend_rknpu2_buffer_get_tensor(ggml_backend_buffer_t buffer, 
 // Эта функция вызывается один раз при размещении тензора в буфере.
 // Здесь мы преобразуем веса в нативный формат NPU.
 static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
-    // Мы обрабатываем только тензоры весов для mul_mat
-    if (tensor->op != GGML_OP_MUL_MAT || tensor->op_params[0] != 0) {
-        return GGML_STATUS_SUCCESS; // Не наш клиент
-    }
-    
-    const int64_t k = tensor->ne[1];
-    const int64_t n = tensor->ne[0];
-
-    if (tensor->type != GGML_TYPE_Q8_0 || k % 32 != 0 || n % 32 != 0) {
-        return GGML_STATUS_SUCCESS; // Неподходящий тип или размер
-    }
-    
-    // 1. Деквантизация в F32
-    size_t nelements = ggml_nelements(tensor);
-    std::vector<float> fdata(nelements);
-    ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(tensor->data, fdata.data(), nelements);
-
-    // 2. Трансформация в нативный INT8 формат RKNPU
-    std::vector<int8_t> reordered_data(nelements);
-    ggml_rknpu2_transposed_to_native_int8(reordered_data.data(), fdata.data(), k, n);
-
-    // 3. Создаем ядро, чтобы получить matmul_ctx и размер B
-    struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(1, k, n, RKNN_TENSOR_INT8);
-
-    // 4. Создаем rknn_tensor_mem из нашего DMA-буфера
-    auto * buffer_ctx = (ggml_backend_rknpu2_buffer_context *)buffer->context;
-    size_t tensor_offset = (uintptr_t)tensor->data - (uintptr_t)buffer_ctx->va;
-
-    rknn_tensor_mem* b_mem = rknn_create_mem_from_fd(kernel->matmul_ctx, buffer_ctx->fd, buffer_ctx->va,
-                                                 kernel->matmul_io_attr.B.size, tensor_offset);
-
-    // 5. Копируем преобразованные данные в DMA-память
-    memcpy(b_mem->virt_addr, reordered_data.data(), kernel->matmul_io_attr.B.size);
-
-    // 6. Сохраняем указатель на подготовленные веса в extra
-    auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem};
-    tensor->extra = extra;
     
     return GGML_STATUS_SUCCESS;
 }
@@ -347,6 +310,38 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             const auto * src0 = node->src[0]; // веса (на NPU)
             const auto * src1 = node->src[1]; // активации (на CPU)
             auto * dst = node;
+            
+            // Ленивая инициализация весов
+            if (src0->extra == nullptr) {
+                // Этот тензор весов мы видим впервые. Нужно его подготовить.
+                const int64_t k = src0->ne[1];
+                const int64_t n = src0->ne[0];
+                
+                // 1. Деквантизация Q8_0 -> F32
+                size_t nelements = ggml_nelements(src0);
+                std::vector<float> fdata(nelements);
+                ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(src0->data, fdata.data(), nelements);
+
+                // 2. Трансформация в нативный INT8 формат RKNPU
+                std::vector<int8_t> reordered_data(nelements);
+                ggml_rknpu2_transposed_to_native_int8(reordered_data.data(), fdata.data(), k, n);
+                
+                // 3. Создаем ядро, чтобы получить matmul_ctx
+                struct ggml_rknpu2_matmul_kernel* kernel_init = ggml_rknpu2_matmul_kernel_create(1, k, n, RKNN_TENSOR_INT8);
+
+                // 4. Создаем rknn_tensor_mem, но не из файла, а из нашего же буфера, где уже лежат веса
+                ggml_backend_buffer_t buffer = src0->buffer;
+                auto * buffer_ctx = (ggml_backend_rknpu2_buffer_context *)buffer->context;
+                size_t tensor_offset = (uintptr_t)src0->data - (uintptr_t)buffer_ctx->va;
+                
+                rknn_tensor_mem* b_mem = rknn_create_mem_from_fd(kernel_init->matmul_ctx, buffer_ctx->fd, buffer_ctx->va, kernel_init->matmul_io_attr.B.size, tensor_offset);
+
+                // 5. Копируем преобразованные данные в DMA-память (поверх старых)
+                memcpy(b_mem->virt_addr, reordered_data.data(), kernel_init->matmul_io_attr.B.size);
+
+                // 6. Сохраняем указатель
+                src0->extra = new ggml_backend_rknpu2_tensor_extra{b_mem};
+            }
 
             GGML_ASSERT(src0->extra != nullptr && "RKNPU2: weight tensor not prepared");
             auto * tensor_extra = (ggml_backend_rknpu2_tensor_extra*) src0->extra;
