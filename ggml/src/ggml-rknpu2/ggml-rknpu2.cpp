@@ -597,7 +597,7 @@ static bool ggml_backend_rknpu2_device_supports_op(ggml_backend_dev_t dev, const
             const int64_t k = src0->ne[1];
 
             // Проверяем аппаратные ограничения RKNPU2
-            if (k > 4096 || k % 32 != 0 || n % 32 != 0) {
+            if (k % 32 != 0 || n % 32 != 0) {
                 return false;
             }
 
