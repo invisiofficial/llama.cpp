@@ -181,17 +181,17 @@ struct ggml_backend_rknpu2_context {
     int core_mask = RKNN_NPU_CORE_0_1_2;
 };
 
+// Tensor extra data (stores prepared weights)
+struct ggml_backend_rknpu2_tensor_extra {
+    rknn_tensor_mem* b_mem;
+};
+
 // Buffer context (stores info about a DMA allocation)
 struct ggml_backend_rknpu2_buffer_context {
     int fd = -1;
     void * va = nullptr;
     size_t size = 0;
     std::vector<ggml_backend_rknpu2_tensor_extra*> created_extras; // Добавляем список
-};
-
-// Tensor extra data (stores prepared weights)
-struct ggml_backend_rknpu2_tensor_extra {
-    rknn_tensor_mem* b_mem;
 };
 
 //================================================================================
@@ -253,11 +253,11 @@ static void ggml_backend_rknpu2_buffer_get_tensor(ggml_backend_buffer_t buffer, 
 // Здесь мы преобразуем веса в нативный формат NPU.
 static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
     // Мы обрабатываем только тензоры весов для mul_mat
-    if (!ggml_is_param(tensor)) {
-        return GGML_STATUS_SUCCESS; // Обрабатываем только веса/параметры
+    if ((tensor->flags & GGML_TENSOR_FLAG_PARAM) == 0) {
+        return GGML_STATUS_SUCCESS; // Обрабатываем только тензоры с флагом PARAM
     }
     
-    if (tensor->type != GGML_TYPE_Q8_0 || tensor->n_dims != 2) {
+    if (tensor->type != GGML_TYPE_Q8_0 || ggml_n_dims(tensor) != 2) {
         return GGML_STATUS_SUCCESS; // Поддерживаем только 2D Q8_0 тензоры
     }
     
@@ -291,7 +291,6 @@ static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t 
     memcpy(b_mem->virt_addr, reordered_data.data(), kernel->matmul_io_attr.B.size);
 
     // 6. Сохраняем указатель на подготовленные веса в extra
-    auto * buffer_ctx = (ggml_backend_rknpu2_buffer_context *)buffer->context;
     auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem};
     tensor->extra = extra;
     buffer_ctx->created_extras.push_back(extra);
