@@ -175,7 +175,7 @@ static void ggml_rknpu2_reorder_q8_0_to_native_int8(
     for (size_t row = 0; row < n; ++row) {
         for (size_t col_block = 0; col_block < nb_per_row; ++col_block) {
             const size_t k_base = col_block * GGML_QK8_0;
-            const block_q8_0 * block = (const block_q8_0 *)((const char *)src_q8_0 + (row * nb_per_row + col_block) * q8_0_traits.size);
+            const block_q8_0 * block = (const block_q8_0 *)((const char *)src_q8_0 + (row * nb_per_row + col_block) * q8_0_traits->size);
 
             const float d_local = ggml_fp16_to_fp32(block->d);
 
@@ -311,22 +311,22 @@ static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t 
     //ggml_rknpu2_transposed_to_native_int8(reordered_data.data(), fdata.data(), k, n);
 
     // 3. Создаем ядро, чтобы получить matmul_ctx и размер B
-    struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(1, k, n, RKNN_TENSOR_INT8);
+    //struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(1, k, n, RKNN_TENSOR_INT8);
 
     // 4. Создаем rknn_tensor_mem из нашего DMA-буфера
-    auto * buffer_ctx = (ggml_backend_rknpu2_buffer_context *)buffer->context;
-    size_t tensor_offset = (uintptr_t)tensor->data - (uintptr_t)buffer_ctx->va;
+    //auto * buffer_ctx = (ggml_backend_rknpu2_buffer_context *)buffer->context;
+    //size_t tensor_offset = (uintptr_t)tensor->data - (uintptr_t)buffer_ctx->va;
 
-    rknn_tensor_mem* b_mem = rknn_create_mem_from_fd(kernel->matmul_ctx, buffer_ctx->fd, buffer_ctx->va,
-                                                 kernel->matmul_io_attr.B.size, tensor_offset);
+    //rknn_tensor_mem* b_mem = rknn_create_mem_from_fd(kernel->matmul_ctx, buffer_ctx->fd, buffer_ctx->va,
+    //                                             kernel->matmul_io_attr.B.size, tensor_offset);
 
     // 5. Копируем преобразованные данные в DMA-память
-    memcpy(b_mem->virt_addr, reordered_data.data(), kernel->matmul_io_attr.B.size);
+    //memcpy(b_mem->virt_addr, reordered_data.data(), kernel->matmul_io_attr.B.size);
 
     // 6. Сохраняем указатель на подготовленные веса в extra
-    auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem};
-    tensor->extra = extra;
-    buffer_ctx->created_extras.push_back(extra);
+    //auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem};
+    //tensor->extra = extra;
+    //buffer_ctx->created_extras.push_back(extra);
     
     return GGML_STATUS_SUCCESS;
 }
@@ -431,7 +431,7 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
                 GGML_ASSERT(d_max > 0.0f);
 
                 // 2. Создаем ядро, чтобы получить matmul_ctx и размер B
-                struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(1, k, n, RKNN_TENSOR_INT8);
+                struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(1, k, n, RKNN_INT8_MM_INT8_TO_INT32);
 
                 // 3. Выделяем DMA-память для преобразованных весов
                 rknn_tensor_mem* b_mem = rknn_create_mem(kernel->matmul_ctx, kernel->matmul_io_attr.B.size);
@@ -452,7 +452,7 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             const int64_t k = src0->ne[1];
             const int64_t n = src0->ne[0];
 
-            struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(m, k, n, RKNN_TENSOR_INT8);
+            struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(m, k, n, RKNN_INT8_MM_INT8_TO_INT32);
             GGML_ASSERT(kernel != nullptr);
 
             // Подготовка активаций (матрица A): F32 -> INT8
