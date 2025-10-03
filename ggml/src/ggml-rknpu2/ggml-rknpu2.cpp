@@ -155,22 +155,52 @@ static void ggml_rknpu2_destroy() {
 }
 
 // Data transformation logic
-static void ggml_rknpu2_transposed_to_native_int8(int8_t * dst, const float * src, size_t k, size_t n) {
-    GGML_ASSERT(k % 32 == 0 && n % 32 == 0 && k > 0 && n > 0);
+static void ggml_rknpu2_reorder_q8_0_to_native_int8(
+    int8_t * dst,
+    const void * src_q8_0,
+    size_t k, size_t n,
+    float d_max) {
+
+    GGML_ASSERT(k > 0 && n > 0 && k % 32 == 0 && n % 32 == 0);
+    GGML_ASSERT(d_max > 0.0f);
+
     const size_t rknpu_strides[4] = {k / 32 * 32 * 32, 32 * 32, 32, 1};
-    for (size_t j = 0; j < k / 32; j++) {
-        for (size_t i = 0; i < n / 32; i++) {
-            for (size_t ii = 0; ii < 32; ii++) {
-                for (size_t jj = 0; jj < 32; jj++) {
-                    size_t src_idx = j * 32 + (i * 32 + ii) * k + jj;
-                    size_t dst_idx = i * rknpu_strides[0] + j * rknpu_strides[1] + ii * rknpu_strides[2] + jj;
-                    dst[dst_idx] = roundf(fminf(fmaxf(src[src_idx], -1.0f), 1.0f) * 127.0f);
-                }
+    const ggml_type_traits_t q8_0_traits = ggml_get_type_traits(GGML_TYPE_Q8_0);
+
+    const size_t nb_per_row = k / QK8_0; // number of blocks per row
+    const float scale_factor = 127.0f / d_max;
+
+    // The source tensor is laid out as [N, K]
+    for (size_t row = 0; row < n; ++row) {
+        for (size_t col_block = 0; col_block < nb_per_row; ++col_block) {
+            const size_t k_base = col_block * QK8_0;
+            const ggml_block_q8_0 * block = (const ggml_block_q8_0 *)((const char *)src_q8_0 + (row * nb_per_row + col_block) * q8_0_traits.type_size);
+
+            const float d_local = ggml_fp16_to_fp32(block->d);
+
+            for (size_t i = 0; i < QK8_0; ++i) {
+                const float val_f32 = block->qs[i] * d_local;
+                const int8_t val_int8 = (int8_t)roundf(fminf(fmaxf(val_f32 * scale_factor, -127.0f), 127.0f));
+
+                // Calculate destination index based on NPU native layout [N/32, K/32, 32, 32]
+                const size_t current_k = k_base + i;
+                const size_t current_n = row;
+
+                const size_t n_chunk = current_n / 32;
+                const size_t k_chunk = current_k / 32;
+                const size_t n_inner = current_n % 32;
+                const size_t k_inner = current_k % 32;
+
+                const size_t dst_idx = n_chunk * rknpu_strides[0] +
+                                       k_chunk * rknpu_strides[1] +
+                                       n_inner * rknpu_strides[2] +
+                                       k_inner * rknpu_strides[3];
+
+                dst[dst_idx] = val_int8;
             }
         }
     }
 }
-
 
 //================================================================================
 // GGML Backend Implementation
@@ -185,6 +215,7 @@ struct ggml_backend_rknpu2_context {
 struct ggml_backend_rknpu2_tensor_extra {
     rknn_tensor_mem* b_mem;
     bool initialized;
+    float d_max;
 };
 
 // Buffer context (stores info about a DMA allocation)
@@ -374,7 +405,7 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             // --- ЛЕНИВАЯ ИНИЦИАЛИЗАЦИЯ ВЕСОВ (src0) ---
             if (src0->extra == nullptr) {
                 fprintf(stderr, "[RKNPU2] Lazily initializing weight tensor '%s'\n", src0->name);
-                
+
                 // Проверяем, подходит ли тензор
                 const int64_t k = src0->ne[1];
                 const int64_t n = src0->ne[0];
@@ -384,31 +415,32 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
                      return GGML_STATUS_FAILED;
                 }
 
-                // 1. Деквантизация в F32 (данные весов лежат в src0->data)
-                size_t nelements = ggml_nelements(src0);
-                std::vector<float> fdata(nelements);
-                ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(src0->data, fdata.data(), nelements);
+                // 1. НАХОДИМ ГЛОБАЛЬНЫЙ МАСШТАБ (d_max)
+                float d_max = 0.0f;
+                const size_t nelements = ggml_nelements(src0);
+                const size_t n_blocks = nelements / QK8_0;
+                const ggml_block_q8_0 * blocks = (const ggml_block_q8_0 *)src0->data;
 
-                // 2. Трансформация в нативный INT8 формат RKNPU
-                std::vector<int8_t> reordered_data(nelements);
-                ggml_rknpu2_transposed_to_native_int8(reordered_data.data(), fdata.data(), k, n);
+                for (size_t j = 0; j < n_blocks; ++j) {
+                    float d_local = fabsf(ggml_fp16_to_fp32(blocks[j].d));
+                    if (d_local > d_max) {
+                        d_max = d_local;
+                    }
+                }
+                GGML_ASSERT(d_max > 0.0f);
 
-                // 3. Создаем ядро, чтобы получить matmul_ctx и размер B
-                // M=1 - это заглушка, т.к. размер активаций может меняться.
+                // 2. Создаем ядро, чтобы получить matmul_ctx и размер B
                 struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(1, k, n, RKNN_TENSOR_INT8);
 
-                // 4. Выделяем DMA-память для весов
-                // Мы не можем использовать буфер, в котором лежит src0, т.к. он уже занят
-                // данными в неправильном формате. Нам нужна новая память.
-                // Это не очень эффективно, но это самый простой рабочий вариант.
+                // 3. Выделяем DMA-память для преобразованных весов
                 rknn_tensor_mem* b_mem = rknn_create_mem(kernel->matmul_ctx, kernel->matmul_io_attr.B.size);
                 GGML_ASSERT(b_mem != nullptr);
 
-                // 5. Копируем преобразованные данные в DMA-память
-                memcpy(b_mem->virt_addr, reordered_data.data(), kernel->matmul_io_attr.B.size);
+                // 4. Трансформируем веса с новым методом
+                ggml_rknpu2_reorder_q8_0_to_native_int8((int8_t*)b_mem->virt_addr, src0->data, k, n, d_max);
 
-                // 6. Создаем и сохраняем extra
-                auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem, true};
+                // 5. Создаем и сохраняем extra
+                auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem, true, d_max};
                 src0->extra = extra;
             }
 
@@ -442,8 +474,11 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             // Обработка результата (матрица C): INT32 -> F32
             float * dst_data = (float *) dst->data;
             int32_t * c_virt = (int32_t *) kernel->C->virt_addr;
+
+            const float dequant_scale = (GGML_RKNPU2_INPUT_SCALE * tensor_extra->d_max) / (127.0f * 127.0f);
+
             for (size_t j = 0; j < (size_t)m * n; j++) {
-                dst_data[j] = (float)c_virt[j] / 127.0f / 127.0f * GGML_RKNPU2_INPUT_SCALE;
+                dst_data[j] = (float)c_virt[j] * dequant_scale;
             }
         }
     }
