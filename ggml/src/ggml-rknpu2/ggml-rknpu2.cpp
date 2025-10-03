@@ -184,6 +184,7 @@ struct ggml_backend_rknpu2_context {
 // Tensor extra data (stores prepared weights)
 struct ggml_backend_rknpu2_tensor_extra {
     rknn_tensor_mem* b_mem;
+    bool initialized;
 };
 
 // Buffer context (stores info about a DMA allocation)
@@ -307,7 +308,7 @@ static void ggml_backend_rknpu2_buffer_reset(ggml_backend_buffer_t buffer) {
 static const struct ggml_backend_buffer_i rknpu2_buffer_interface = {
     /* .free_buffer   = */ ggml_backend_rknpu2_buffer_free_buffer,
     /* .get_base       = */ ggml_backend_rknpu2_buffer_get_base,
-    /* .init_tensor    = */ ggml_backend_rknpu2_buffer_init_tensor,
+    /* .init_tensor    = */ nullptr,
     /* .memset_tensor  = */ ggml_backend_rknpu2_buffer_memset_tensor, // Используем реализацию по умолчанию
     /* .set_tensor     = */ ggml_backend_rknpu2_buffer_set_tensor, // Используем реализацию по умолчанию
     /* .get_tensor     = */ ggml_backend_rknpu2_buffer_get_tensor, // Используем реализацию по умолчанию
@@ -366,9 +367,50 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
         struct ggml_tensor * node = cgraph->nodes[i];
 
         if (node->op == GGML_OP_MUL_MAT) {
-            const auto * src0 = node->src[0]; // веса (на NPU)
-            const auto * src1 = node->src[1]; // активации (на CPU)
-            auto * dst = node;
+            struct ggml_tensor * src0 = node->src[0]; // веса
+            struct ggml_tensor * src1 = node->src[1]; // активации
+            struct ggml_tensor * dst = node;
+
+            // --- ЛЕНИВАЯ ИНИЦИАЛИЗАЦИЯ ВЕСОВ (src0) ---
+            if (src0->extra == nullptr) {
+                fprintf(stderr, "[RKNPU2] Lazily initializing weight tensor '%s'\n", src0->name);
+                
+                // Проверяем, подходит ли тензор
+                const int64_t k = src0->ne[1];
+                const int64_t n = src0->ne[0];
+
+                if (src0->type != GGML_TYPE_Q8_0 || src0->n_dims != 2 || k % 32 != 0 || n % 32 != 0) {
+                     GGML_LOG_ERROR("%s: unsupported weight tensor '%s' for RKNPU2\n", __func__, src0->name);
+                     return GGML_STATUS_FAILED;
+                }
+
+                // 1. Деквантизация в F32 (данные весов лежат в src0->data)
+                size_t nelements = ggml_nelements(src0);
+                std::vector<float> fdata(nelements);
+                ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(src0->data, fdata.data(), nelements);
+
+                // 2. Трансформация в нативный INT8 формат RKNPU
+                std::vector<int8_t> reordered_data(nelements);
+                ggml_rknpu2_transposed_to_native_int8(reordered_data.data(), fdata.data(), k, n);
+
+                // 3. Создаем ядро, чтобы получить matmul_ctx и размер B
+                // M=1 - это заглушка, т.к. размер активаций может меняться.
+                struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(1, k, n, RKNN_TENSOR_INT8);
+
+                // 4. Выделяем DMA-память для весов
+                // Мы не можем использовать буфер, в котором лежит src0, т.к. он уже занят
+                // данными в неправильном формате. Нам нужна новая память.
+                // Это не очень эффективно, но это самый простой рабочий вариант.
+                rknn_tensor_mem* b_mem = rknn_create_mem(kernel->matmul_ctx, kernel->matmul_io_attr.B.size);
+                GGML_ASSERT(b_mem != nullptr);
+
+                // 5. Копируем преобразованные данные в DMA-память
+                memcpy(b_mem->virt_addr, reordered_data.data(), kernel->matmul_io_attr.B.size);
+
+                // 6. Создаем и сохраняем extra
+                auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem, true};
+                src0->extra = extra;
+            }
 
             GGML_ASSERT(src0->extra != nullptr && "RKNPU2: weight tensor not prepared");
             auto * tensor_extra = (ggml_backend_rknpu2_tensor_extra*) src0->extra;
