@@ -168,18 +168,18 @@ static void ggml_rknpu2_reorder_q8_0_to_native_int8(
     const size_t rknpu_strides[4] = {k / 32 * 32 * 32, 32 * 32, 32, 1};
     const auto q8_0_traits = ggml_get_type_traits(GGML_TYPE_Q8_0);
 
-    const size_t nb_per_row = k / GGML_QK8_0;
+    const size_t nb_per_row = k / 32;
     const float scale_factor = 127.0f / d_max;
 
     // The source tensor is laid out as [N, K]
     for (size_t row = 0; row < n; ++row) {
         for (size_t col_block = 0; col_block < nb_per_row; ++col_block) {
-            const size_t k_base = col_block * GGML_QK8_0;
-            const block_q8_0 * block = (const block_q8_0 *)((const char *)src_q8_0 + (row * nb_per_row + col_block) * q8_0_traits->size);
+            const size_t k_base = col_block * 32;
+            const block_q8_0 * block = (const block_q8_0 *)((const char *)src_q8_0 + (row * nb_per_row + col_block) * q8_0_traits->blck_size);
 
             const float d_local = ggml_fp16_to_fp32(block->d);
 
-            for (size_t i = 0; i < GGML_QK8_0; ++i) {
+            for (size_t i = 0; i < 32; ++i) {
                 const float val_f32 = block->qs[i] * d_local;
                 const int8_t val_int8 = (int8_t)roundf(fminf(fmaxf(val_f32 * scale_factor, -127.0f), 127.0f));
 
@@ -419,7 +419,7 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
                 // 1. НАХОДИМ ГЛОБАЛЬНЫЙ МАСШТАБ (d_max)
                 float d_max = 0.0f;
                 const size_t nelements = ggml_nelements(src0);
-                const size_t n_blocks = nelements / GGML_QK8_0;
+                const size_t n_blocks = nelements / 32;
                 const block_q8_0 * blocks = (const block_q8_0 *)src0->data;
 
                 for (size_t j = 0; j < n_blocks; ++j) {
