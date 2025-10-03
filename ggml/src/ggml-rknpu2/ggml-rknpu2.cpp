@@ -210,6 +210,18 @@ static void * ggml_backend_rknpu2_buffer_get_base(ggml_backend_buffer_t buffer) 
     return ctx->va;
 }
 
+static void ggml_backend_rknpu2_buffer_set_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    // Эта функция копирует данные с CPU (из `data`) в наш DMA-буфер.
+    // `tensor->data` уже указывает на правильное место внутри DMA-буфера.
+    GGML_ASSERT(offset + size <= ggml_nbytes(tensor));
+    memcpy((char *)tensor->data + offset, data, size);
+}
+
+static void ggml_backend_rknpu2_buffer_get_tensor(ggml_backend_buffer_t buffer, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    GGML_ASSERT(offset + size <= ggml_nbytes(tensor));
+    memcpy(data, (const char *)tensor->data + offset, size);
+}
+
 // Эта функция вызывается один раз при размещении тензора в буфере.
 // Здесь мы преобразуем веса в нативный формат NPU.
 static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
@@ -265,8 +277,8 @@ static const struct ggml_backend_buffer_i rknpu2_buffer_interface = {
     /* .get_base       = */ ggml_backend_rknpu2_buffer_get_base,
     /* .init_tensor    = */ ggml_backend_rknpu2_buffer_init_tensor,
     /* .memset_tensor  = */ nullptr, // Используем реализацию по умолчанию
-    /* .set_tensor     = */ nullptr, // Используем реализацию по умолчанию
-    /* .get_tensor     = */ nullptr, // Используем реализацию по умолчанию
+    /* .set_tensor     = */ ggml_backend_rknpu2_buffer_set_tensor, // Используем реализацию по умолчанию
+    /* .get_tensor     = */ ggml_backend_rknpu2_buffer_get_tensor, // Используем реализацию по умолчанию
     /* .cpy_tensor     = */ nullptr, // Используем реализацию по умолчанию
     /* .clear          = */ nullptr, // Используем реализацию по умолчанию
     /* .reset          = */ ggml_backend_rknpu2_buffer_reset,
