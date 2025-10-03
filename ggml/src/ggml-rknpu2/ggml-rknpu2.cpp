@@ -186,6 +186,7 @@ struct ggml_backend_rknpu2_buffer_context {
     int fd = -1;
     void * va = nullptr;
     size_t size = 0;
+    std::vector<ggml_backend_rknpu2_tensor_extra*> created_extras; // Добавляем список
 };
 
 // Tensor extra data (stores prepared weights)
@@ -211,6 +212,22 @@ static void ggml_backend_rknpu2_buffer_clear(ggml_backend_buffer_t buffer, uint8
 
 static void ggml_backend_rknpu2_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     auto * ctx = (ggml_backend_rknpu2_buffer_context *)buffer->context;
+
+    if (!ctx->created_extras.empty()) {
+        rknn_matmul_ctx temp_ctx;
+        rknn_matmul_info temp_info = {};
+        temp_info.type = RKNN_TENSOR_INT8;
+        if (rknn_matmul_create(&temp_ctx, &temp_info, nullptr) == 0) {
+            for (auto* extra : ctx->created_extras) {
+                if (extra && extra->b_mem) {
+                    rknn_destroy_mem(temp_ctx, extra->b_mem);
+                }
+                delete extra;
+            }
+            rknn_matmul_destroy(temp_ctx);
+        }
+    }
+
     dma_buf_free(ctx->size, &ctx->fd, ctx->va);
     delete ctx;
 }
@@ -236,14 +253,18 @@ static void ggml_backend_rknpu2_buffer_get_tensor(ggml_backend_buffer_t buffer, 
 // Здесь мы преобразуем веса в нативный формат NPU.
 static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor) {
     // Мы обрабатываем только тензоры весов для mul_mat
-    if (tensor->op != GGML_OP_MUL_MAT || tensor->op_params[0] != 0) {
-        return GGML_STATUS_SUCCESS; // Не наш клиент
+    if (!ggml_is_param(tensor)) {
+        return GGML_STATUS_SUCCESS; // Обрабатываем только веса/параметры
+    }
+    
+    if (tensor->type != GGML_TYPE_Q8_0 || tensor->n_dims != 2) {
+        return GGML_STATUS_SUCCESS; // Поддерживаем только 2D Q8_0 тензоры
     }
     
     const int64_t k = tensor->ne[1];
     const int64_t n = tensor->ne[0];
 
-    if (tensor->type != GGML_TYPE_Q8_0 || k % 32 != 0 || n % 32 != 0) {
+    if (k % 32 != 0 || n % 32 != 0) {
         return GGML_STATUS_SUCCESS; // Неподходящий тип или размер
     }
     
@@ -270,8 +291,10 @@ static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t 
     memcpy(b_mem->virt_addr, reordered_data.data(), kernel->matmul_io_attr.B.size);
 
     // 6. Сохраняем указатель на подготовленные веса в extra
+    auto * buffer_ctx = (ggml_backend_rknpu2_buffer_context *)buffer->context;
     auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem};
     tensor->extra = extra;
+    buffer_ctx->created_extras.push_back(extra);
     
     return GGML_STATUS_SUCCESS;
 }
