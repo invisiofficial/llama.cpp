@@ -199,6 +199,16 @@ struct ggml_backend_rknpu2_tensor_extra {
 
 // --- Buffer Interface ---
 
+static void ggml_backend_rknpu2_buffer_memset_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
+    GGML_ASSERT(offset + size <= ggml_nbytes(tensor));
+    memset((char *)tensor->data + offset, value, size);
+}
+
+static void ggml_backend_rknpu2_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
+    auto * ctx = (ggml_backend_rknpu2_buffer_context *)buffer->context;
+    memset(ctx->va, value, ctx->size);
+}
+
 static void ggml_backend_rknpu2_buffer_free_buffer(ggml_backend_buffer_t buffer) {
     auto * ctx = (ggml_backend_rknpu2_buffer_context *)buffer->context;
     dma_buf_free(ctx->size, &ctx->fd, ctx->va);
@@ -276,11 +286,11 @@ static const struct ggml_backend_buffer_i rknpu2_buffer_interface = {
     /* .free_buffer   = */ ggml_backend_rknpu2_buffer_free_buffer,
     /* .get_base       = */ ggml_backend_rknpu2_buffer_get_base,
     /* .init_tensor    = */ ggml_backend_rknpu2_buffer_init_tensor,
-    /* .memset_tensor  = */ nullptr, // Используем реализацию по умолчанию
+    /* .memset_tensor  = */ ggml_backend_rknpu2_buffer_memset_tensor, // Используем реализацию по умолчанию
     /* .set_tensor     = */ ggml_backend_rknpu2_buffer_set_tensor, // Используем реализацию по умолчанию
     /* .get_tensor     = */ ggml_backend_rknpu2_buffer_get_tensor, // Используем реализацию по умолчанию
     /* .cpy_tensor     = */ nullptr, // Используем реализацию по умолчанию
-    /* .clear          = */ nullptr, // Используем реализацию по умолчанию
+    /* .clear          = */ ggml_backend_rknpu2_buffer_clear, // Используем реализацию по умолчанию
     /* .reset          = */ ggml_backend_rknpu2_buffer_reset,
 };
 
@@ -443,6 +453,14 @@ static ggml_backend_t ggml_backend_rknpu2_device_init_backend(ggml_backend_dev_t
     return backend;
 }
 
+static void ggml_backend_rknpu2_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
+    // RKNPU CMA память управляется ядром, точные цифры получить сложно.
+    // Возвращаем нули, это безопасно.
+    (void)dev;
+    *free = 0;
+    *total = 0;
+}
+
 static ggml_backend_buffer_type_t ggml_backend_rknpu2_device_get_buffer_type(ggml_backend_dev_t dev) {
     static struct ggml_backend_buffer_type rknpu2_buffer_type = {
         /* .iface   = */ rknpu2_buffer_type_interface,
@@ -450,6 +468,11 @@ static ggml_backend_buffer_type_t ggml_backend_rknpu2_device_get_buffer_type(ggm
         /* .context = */ nullptr,
     };
     return &rknpu2_buffer_type;
+}
+
+static bool ggml_backend_rknpu2_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
+    // Мы поддерживаем только наш собственный тип буфера
+    return buft == ggml_backend_rknpu2_device_get_buffer_type(dev);
 }
 
 static bool ggml_backend_rknpu2_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
@@ -474,7 +497,7 @@ static bool ggml_backend_rknpu2_device_offload_op(ggml_backend_dev_t dev, const 
 static const struct ggml_backend_device_i rknpu2_device_interface = {
     /* .get_name             = */ ggml_backend_rknpu2_device_get_name,
     /* .get_description      = */ ggml_backend_rknpu2_device_get_description,
-    /* .get_memory           = */ nullptr, // TODO
+    /* .get_memory           = */ ggml_backend_rknpu2_device_get_memory,
     /* .get_type             = */ ggml_backend_rknpu2_device_get_type,
     /* .get_props            = */ ggml_backend_rknpu2_device_get_props,
     /* .init_backend         = */ ggml_backend_rknpu2_device_init_backend,
@@ -482,7 +505,7 @@ static const struct ggml_backend_device_i rknpu2_device_interface = {
     /* .get_host_buffer_type = */ nullptr,
     /* .buffer_from_host_ptr = */ nullptr,
     /* .supports_op          = */ ggml_backend_rknpu2_device_supports_op,
-    /* .supports_buft        = */ nullptr,
+    /* .supports_buft        = */ ggml_backend_rknpu2_device_supports_buft,
     /* .offload_op           = */ ggml_backend_rknpu2_device_offload_op,
     /* .event_new            = */ nullptr,
     /* .event_free           = */ nullptr,
