@@ -248,6 +248,8 @@ option(GGML_OPENCL_USE_ADRENO_KERNELS       "ggml: use optimized kernels for Adr
 set   (GGML_OPENCL_TARGET_VERSION "300" CACHE STRING
                                             "gmml: OpenCL API version to target")
 
+option(GGML_RKNPU2                          "ggml: use RKNPU2"                                OFF)
+
 # toolchain for vulkan-shaders-gen
 set   (GGML_VULKAN_SHADERS_GEN_TOOLCHAIN "" CACHE FILEPATH "ggml: toolchain file for vulkan-shaders-gen")
 

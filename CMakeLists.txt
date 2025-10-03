@@ -94,6 +94,7 @@ option(LLAMA_TOOLS_INSTALL  "llama: install tools"        ${LLAMA_TOOLS_INSTALL_
 option(LLAMA_CURL       "llama: use libcurl to download model from an URL" ON)
 option(LLAMA_OPENSSL    "llama: use openssl to support HTTPS" OFF)
 option(LLAMA_LLGUIDANCE "llama-common: include LLGuidance library for structured output in common utils" OFF)
+option(LLAMA_RKNPU2     "llama: use Rockchip NPU" OFF)
 
 # Required for relocatable CMake package
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/build-info.cmake)
@@ -137,6 +138,10 @@ llama_option_depr(WARNING     LLAMA_RPC                 GGML_RPC)
 llama_option_depr(WARNING     LLAMA_SYCL                GGML_SYCL)
 llama_option_depr(WARNING     LLAMA_SYCL_F16            GGML_SYCL_F16)
 llama_option_depr(WARNING     LLAMA_CANN                GGML_CANN)
+
+if (LLAMA_RKNPU2)
+    set(GGML_RKNPU2 ON PARENT_SCOPE)
+endif()
 
 if (NOT MSVC)
     if (LLAMA_SANITIZE_THREAD)
