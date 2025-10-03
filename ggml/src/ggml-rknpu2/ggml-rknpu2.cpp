@@ -551,9 +551,28 @@ static bool ggml_backend_rknpu2_device_supports_op(ggml_backend_dev_t dev, const
             return true;
 
         case GGML_OP_MUL_MAT: {
-            const auto * src0 = op->src[0]; const auto * src1 = op->src[1];
-            return src0->type == GGML_TYPE_Q8_0 && src1->type == GGML_TYPE_F32 &&
-                   src0->ne[0] % 32 == 0 && src0->ne[1] % 32 == 0;
+            const auto * src0 = op->src[0]; // веса
+            const auto * src1 = op->src[1]; // активации
+
+            // Проверяем типы
+            if (src0->type != GGML_TYPE_Q8_0 || src1->type != GGML_TYPE_F32) {
+                return false;
+            }
+
+            // Проверяем размерности весов (src0)
+            if (src0->n_dims != 2) {
+                return false;
+            }
+            
+            const int64_t n = src0->ne[0];
+            const int64_t k = src0->ne[1];
+
+            // Проверяем аппаратные ограничения RKNPU2
+            if (k > 4096 || k % 32 != 0 || n % 32 != 0) {
+                return false;
+            }
+
+            return true; // Мы можем выполнить эту операцию
         }
         default: return false;
     }
