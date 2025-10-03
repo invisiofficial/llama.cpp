@@ -22,6 +22,24 @@
 #define GGML_RKNPU2_INPUT_SCALE 1.7f
 
 //================================================================================
+// RKNPU Helper Functions
+//================================================================================
+
+static rknn_matmul_type rknpu2_matmul_type_from_rknn_type(rknn_tensor_type type) {
+    switch(type) {
+        case RKNN_TENSOR_FLOAT16:
+            return RKNN_FLOAT16_MM_FLOAT16_TO_FLOAT32;
+        case RKNN_TENSOR_INT8:
+            return RKNN_INT8_MM_INT8_TO_INT32;
+        case RKNN_TENSOR_INT4:
+            return RKNN_INT4_MM_INT4_TO_INT16;
+        default:
+            GGML_ASSERT(false && "Unsupported rknn_tensor_type");
+            return (rknn_matmul_type)0; // Unreachable
+    }
+}
+
+//================================================================================
 // DMA & RKNPU Kernel Management
 //================================================================================
 
@@ -125,8 +143,8 @@ static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_create(int m,
     kernel->matmul_info.K = k;
     kernel->matmul_info.N = n;
     kernel->matmul_info.type = rknpu2_matmul_type_from_rknn_type(type);
-    kernel->matmul_info.B_layout = 1; // B use native layout (weight)
-    kernel->matmul_info.AC_layout = 0; // A and C use original layout (intermediate)
+    kernel->matmul_info.native_layout = 1;
+    kernel->matmul_info.perf_layout = 0;
 
     int ret = rknn_matmul_create(&kernel->matmul_ctx, &kernel->matmul_info, &kernel->matmul_io_attr);
     GGML_ASSERT(ret == 0);
@@ -155,7 +173,7 @@ static void ggml_rknpu2_destroy() {
 }
 
 // Data transformation logic
-static void ggml_rknpu2_transposed_to_native_int8(int8_t *restrict dst, const float *restrict src, size_t k, size_t n) {
+static void ggml_rknpu2_transposed_to_native_int8(int8_t * dst, const float * src, size_t k, size_t n) {
     GGML_ASSERT(k % 32 == 0 && n % 32 == 0 && k > 0 && n > 0);
     const size_t rknpu_strides[4] = {k / 32 * 32 * 32, 32 * 32, 32, 1};
     for (size_t j = 0; j < k / 32; j++) {
@@ -228,7 +246,7 @@ static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t 
     // 1. Деквантизация в F32
     size_t nelements = ggml_nelements(tensor);
     std::vector<float> fdata(nelements);
-    ggml_get_rows_q8_0(tensor, fdata.data(), nelements);
+    ggml_internal_get_type_traits(GGML_TYPE_Q8_0).to_float(tensor->data, fdata.data(), nelements);
 
     // 2. Трансформация в нативный INT8 формат RKNPU
     std::vector<int8_t> reordered_data(nelements);
@@ -264,10 +282,11 @@ static const struct ggml_backend_buffer_i rknpu2_buffer_interface = {
     /* .free_buffer   = */ ggml_backend_rknpu2_buffer_free_buffer,
     /* .get_base       = */ ggml_backend_rknpu2_buffer_get_base,
     /* .init_tensor    = */ ggml_backend_rknpu2_buffer_init_tensor,
-    /* .set_tensor     = */ ggml_backend_buffer_set_tensor_defaults,
-    /* .get_tensor     = */ ggml_backend_buffer_get_tensor_defaults,
-    /* .cpy_tensor     = */ ggml_backend_buffer_cpy_tensor_defaults,
-    /* .clear          = */ ggml_backend_buffer_clear_defaults,
+    /* .memset_tensor  = */ nullptr, // Используем реализацию по умолчанию
+    /* .set_tensor     = */ nullptr, // Используем реализацию по умолчанию
+    /* .get_tensor     = */ nullptr, // Используем реализацию по умолчанию
+    /* .cpy_tensor     = */ nullptr, // Используем реализацию по умолчанию
+    /* .clear          = */ nullptr, // Используем реализацию по умолчанию
     /* .reset          = */ ggml_backend_rknpu2_buffer_reset,
 };
 
@@ -319,11 +338,6 @@ static void ggml_backend_rknpu2_free(ggml_backend_t backend) {
 static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
     for (int i = 0; i < cgraph->n_nodes; i++) {
         struct ggml_tensor * node = cgraph->nodes[i];
-
-        // Мы обрабатываем только те узлы, которые были назначены нашему бэкенду
-        if (node->backend != backend) {
-            continue;
-        }
 
         if (node->op == GGML_OP_MUL_MAT) {
             const auto * src0 = node->src[0]; // веса (на NPU)
