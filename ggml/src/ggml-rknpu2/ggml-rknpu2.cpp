@@ -403,6 +403,22 @@ static ggml_guid_t ggml_backend_rknpu2_guid(void) {
     return &guid;
 }
 
+static void ggml_backend_rknpu2_device_get_props(ggml_backend_dev_t dev, struct ggml_backend_dev_props * props) {
+    props->name        = ggml_backend_rknpu2_device_get_name(dev);
+    props->description = ggml_backend_rknpu2_device_get_description(dev);
+    props->type        = ggml_backend_rknpu2_device_get_type(dev);
+    // Мы не можем легко получить объем памяти NPU, поэтому оставляем нули
+    props->memory_free  = 0;
+    props->memory_total = 0;
+    // Возможности нашего бэкенда
+    props->caps = (struct ggml_backend_dev_caps){
+        /* .async                 = */ false, // Мы работаем синхронно
+        /* .host_buffer           = */ false,
+        /* .buffer_from_host_ptr  = */ false, // Мы не можем использовать память CPU напрямую
+        /* .events                = */ false,
+    };
+}
+
 static ggml_backend_t ggml_backend_rknpu2_device_init_backend(ggml_backend_dev_t dev, const char * params) {
     auto * ctx = new ggml_backend_rknpu2_context();
     // TODO: parse params to set ctx->core_mask
@@ -448,7 +464,7 @@ static const struct ggml_backend_device_i rknpu2_device_interface = {
     /* .get_description      = */ ggml_backend_rknpu2_device_get_description,
     /* .get_memory           = */ nullptr, // TODO
     /* .get_type             = */ ggml_backend_rknpu2_device_get_type,
-    /* .get_props            = */ nullptr, // TODO
+    /* .get_props            = */ ggml_backend_rknpu2_device_get_props,
     /* .init_backend         = */ ggml_backend_rknpu2_device_init_backend,
     /* .get_buffer_type      = */ ggml_backend_rknpu2_device_get_buffer_type,
     /* .get_host_buffer_type = */ nullptr,
