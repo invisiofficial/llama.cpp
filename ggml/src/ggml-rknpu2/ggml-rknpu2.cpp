@@ -25,6 +25,12 @@
 // RKNPU Helper Functions
 //================================================================================
 
+typedef enum {
+    RKNN_FLOAT16_MM_FLOAT16_TO_FLOAT32 = 0,
+    RKNN_INT8_MM_INT8_TO_INT32,
+    RKNN_INT4_MM_INT4_TO_INT16,
+} rknn_matmul_type;
+
 static rknn_matmul_type rknpu2_matmul_type_from_rknn_type(rknn_tensor_type type) {
     switch(type) {
         case RKNN_TENSOR_FLOAT16:
@@ -246,7 +252,7 @@ static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t 
     // 1. Деквантизация в F32
     size_t nelements = ggml_nelements(tensor);
     std::vector<float> fdata(nelements);
-    ggml_get_type_traits(GGML_TYPE_Q8_0).to_float(tensor->data, fdata.data(), nelements);
+    ggml_get_type_traits(GGML_TYPE_Q8_0)->to_float(tensor->data, fdata.data(), nelements);
 
     // 2. Трансформация в нативный INT8 формат RKNPU
     std::vector<int8_t> reordered_data(nelements);
@@ -338,10 +344,6 @@ static void ggml_backend_rknpu2_free(ggml_backend_t backend) {
 static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
     for (int i = 0; i < cgraph->n_nodes; i++) {
         struct ggml_tensor * node = cgraph->nodes[i];
-        
-        if (node->op_backend != backend) {
-            continue;
-        }
 
         if (node->op == GGML_OP_MUL_MAT) {
             const auto * src0 = node->src[0]; // веса (на NPU)
