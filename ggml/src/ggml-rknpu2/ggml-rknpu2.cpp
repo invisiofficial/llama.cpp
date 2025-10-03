@@ -560,7 +560,7 @@ static bool ggml_backend_rknpu2_device_supports_op(ggml_backend_dev_t dev, const
             }
 
             // Проверяем размерности весов (src0)
-            if (src0->n_dims != 2) {
+            if (ggml_n_dims(src0) != 2) {
                 return false;
             }
             
