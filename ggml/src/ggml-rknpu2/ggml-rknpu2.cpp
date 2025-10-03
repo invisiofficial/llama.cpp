@@ -22,24 +22,6 @@
 #define GGML_RKNPU2_INPUT_SCALE 1.7f
 
 //================================================================================
-// RKNPU Helper Functions
-//================================================================================
-
-static rknn_matmul_type rknpu2_matmul_type_from_rknn_type(rknn_tensor_type type) {
-    switch(type) {
-        case RKNN_TENSOR_FLOAT16:
-            return RKNN_FLOAT16_MM_FLOAT16_TO_FLOAT32;
-        case RKNN_TENSOR_INT8:
-            return RKNN_INT8_MM_INT8_TO_INT32;
-        // case RKNN_TENSOR_INT4:
-        //     return RKNN_INT4_MM_INT4_TO_INT16;
-        default:
-            GGML_ASSERT(false && "Unsupported rknn_tensor_type");
-            return (rknn_matmul_type)0; // Unreachable
-    }
-}
-
-//================================================================================
 // DMA & RKNPU Kernel Management
 //================================================================================
 
