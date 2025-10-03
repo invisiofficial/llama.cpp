@@ -140,7 +140,7 @@ llama_option_depr(WARNING     LLAMA_SYCL_F16            GGML_SYCL_F16)
 llama_option_depr(WARNING     LLAMA_CANN                GGML_CANN)
 
 if (LLAMA_RKNPU2)
-    set(GGML_RKNPU2 ON PARENT_SCOPE)
+    set(GGML_RKNPU2 ON)
 endif()
 
 if (NOT MSVC)

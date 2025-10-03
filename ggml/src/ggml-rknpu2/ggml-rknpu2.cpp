@@ -400,6 +400,13 @@ static enum ggml_backend_dev_type ggml_backend_rknpu2_device_get_type(ggml_backe
     return GGML_BACKEND_DEVICE_TYPE_ACCEL;
 }
 
+// --- GUID ---
+static ggml_guid_t ggml_backend_rknpu2_guid(void) {
+    // Сгенерированный уникальный GUID для нашего бэкенда
+    static ggml_guid guid = { 0x72, 0x6b, 0x6e, 0x70, 0x75, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 };
+    return &guid;
+}
+
 static ggml_backend_t ggml_backend_rknpu2_device_init_backend(ggml_backend_dev_t dev, const char * params) {
     auto * ctx = new ggml_backend_rknpu2_context();
     // TODO: parse params to set ctx->core_mask
@@ -434,6 +441,12 @@ static bool ggml_backend_rknpu2_device_supports_op(ggml_backend_dev_t dev, const
     }
 }
 
+static bool ggml_backend_rknpu2_device_offload_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
+    // Эта функция говорит llama.cpp, что мы хотим выполнить эту операцию,
+    // даже если ее входные тензоры находятся в памяти CPU.
+    return ggml_backend_rknpu2_device_supports_op(dev, op);
+}
+
 static const struct ggml_backend_device_i rknpu2_device_interface = {
     /* .get_name             = */ ggml_backend_rknpu2_device_get_name,
     /* .get_description      = */ ggml_backend_rknpu2_device_get_description,
@@ -446,7 +459,7 @@ static const struct ggml_backend_device_i rknpu2_device_interface = {
     /* .buffer_from_host_ptr = */ nullptr,
     /* .supports_op          = */ ggml_backend_rknpu2_device_supports_op,
     /* .supports_buft        = */ nullptr,
-    /* .offload_op           = */ nullptr,
+    /* .offload_op           = */ ggml_backend_rknpu2_device_offload_op,
     /* .event_new            = */ nullptr,
     /* .event_free           = */ nullptr,
     /* .event_synchronize    = */ nullptr,
