@@ -476,15 +476,22 @@ static bool ggml_backend_rknpu2_device_supports_buft(ggml_backend_dev_t dev, ggm
 }
 
 static bool ggml_backend_rknpu2_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
+    (void)dev;
     switch (op->op) {
+        case GGML_OP_NONE:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+        case GGML_OP_CPY:
+            return true;
+
         case GGML_OP_MUL_MAT: {
-            const auto * src0 = op->src[0]; // weights
-            const auto * src1 = op->src[1]; // activations
+            const auto * src0 = op->src[0]; const auto * src1 = op->src[1];
             return src0->type == GGML_TYPE_Q8_0 && src1->type == GGML_TYPE_F32 &&
                    src0->ne[0] % 32 == 0 && src0->ne[1] % 32 == 0;
         }
-        default:
-            return false;
+        default: return false;
     }
 }
 
