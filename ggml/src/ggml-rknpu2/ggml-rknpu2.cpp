@@ -25,20 +25,14 @@
 // RKNPU Helper Functions
 //================================================================================
 
-typedef enum {
-    RKNN_FLOAT16_MM_FLOAT16_TO_FLOAT32 = 0,
-    RKNN_INT8_MM_INT8_TO_INT32,
-    RKNN_INT4_MM_INT4_TO_INT16,
-} rknn_matmul_type;
-
 static rknn_matmul_type rknpu2_matmul_type_from_rknn_type(rknn_tensor_type type) {
     switch(type) {
         case RKNN_TENSOR_FLOAT16:
             return RKNN_FLOAT16_MM_FLOAT16_TO_FLOAT32;
         case RKNN_TENSOR_INT8:
             return RKNN_INT8_MM_INT8_TO_INT32;
-        case RKNN_TENSOR_INT4:
-            return RKNN_INT4_MM_INT4_TO_INT16;
+        // case RKNN_TENSOR_INT4:
+        //     return RKNN_INT4_MM_INT4_TO_INT16;
         default:
             GGML_ASSERT(false && "Unsupported rknn_tensor_type");
             return (rknn_matmul_type)0; // Unreachable
@@ -131,7 +125,7 @@ static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_find(int m, i
     for (int i = 0; i < matmul_kernels_count; i++) {
         struct ggml_rknpu2_matmul_kernel* kernel = &matmul_kernels[i];
         if (kernel->matmul_info.M == m && kernel->matmul_info.K == k && kernel->matmul_info.N == n &&
-            rknpu2_matmul_type_from_rknn_type(type) == kernel->matmul_info.type)
+            type == kernel->matmul_info.type)
             return kernel;
     }
     return NULL;
@@ -148,7 +142,7 @@ static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_create(int m,
     kernel->matmul_info.M = m;
     kernel->matmul_info.K = k;
     kernel->matmul_info.N = n;
-    kernel->matmul_info.type = rknpu2_matmul_type_from_rknn_type(type);
+    kernel->matmul_info.type = type;
     kernel->matmul_info.native_layout = 1;
     kernel->matmul_info.perf_layout = 0;
 
