@@ -246,7 +246,7 @@ static ggml_status ggml_backend_rknpu2_buffer_init_tensor(ggml_backend_buffer_t 
     // 1. Деквантизация в F32
     size_t nelements = ggml_nelements(tensor);
     std::vector<float> fdata(nelements);
-    ggml_internal_get_type_traits(GGML_TYPE_Q8_0).to_float(tensor->data, fdata.data(), nelements);
+    ggml_get_type_traits(GGML_TYPE_Q8_0).to_float(tensor->data, fdata.data(), nelements);
 
     // 2. Трансформация в нативный INT8 формат RKNPU
     std::vector<int8_t> reordered_data(nelements);
@@ -338,6 +338,10 @@ static void ggml_backend_rknpu2_free(ggml_backend_t backend) {
 static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
     for (int i = 0; i < cgraph->n_nodes; i++) {
         struct ggml_tensor * node = cgraph->nodes[i];
+        
+        if (node->op_backend != backend) {
+            continue;
+        }
 
         if (node->op == GGML_OP_MUL_MAT) {
             const auto * src0 = node->src[0]; // веса (на NPU)
