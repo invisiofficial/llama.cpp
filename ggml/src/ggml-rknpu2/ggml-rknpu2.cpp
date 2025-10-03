@@ -172,28 +172,35 @@ static void ggml_rknpu2_reorder_q8_0_to_native_int8(
     const float scale_factor = 127.0f / d_max;
 
     // The source tensor is laid out as [N, K]
-    for (size_t j = 0; j < k / 32; j++) {
-        for (size_t i = 0; i < n / 32; i++) {
-            for (size_t ii = 0; ii < 32; ii++) {
-                for (size_t jj = 0; jj < 32; jj++) {
-                    const size_t current_k = j * 32 + jj;
-                    const size_t current_n = i * 32 + ii;
+    for (size_t row = 0; row < n; ++row) {
+        for (size_t col_block = 0; col_block < nb_per_row; ++col_block) {
+            const size_t k_base = col_block * 32;
+            const block_q8_0 * block = (const block_q8_0 *)((const char *)src_q8_0 + (row * nb_per_row + col_block) * q8_0_traits->blck_size);
 
-                    const size_t block_idx = (current_n * nb_per_row) + (current_k / 32);
-                    const size_t idx_in_block = current_k % 32;
+            const float d_local = ggml_fp16_to_fp32(block->d);
 
-                    const block_q8_0* block = (const block_q8_0*)src_q8_0 + block_idx;
-                    
-                    const float d_local = ggml_fp16_to_fp32(block->d);
-                    const float val_f32 = block->qs[idx_in_block] * d_local;
-                    const int8_t val_int8 = (int8_t)roundf(fminf(fmaxf(val_f32 * scale_factor, -127.0f), 127.0f));
+            for (size_t i = 0; i < 32; ++i) {
+                const float val_f32 = block->qs[i] * d_local;
+                const int8_t val_int8 = (int8_t)roundf(fminf(fmaxf(val_f32 * scale_factor, -127.0f), 127.0f));
 
-                    const size_t dst_idx = i * rknpu_strides[0] + j * rknpu_strides[1] + ii * rknpu_strides[2] + jj;
-                    dst[dst_idx] = val_int8;
-                }
+                // Calculate destination index based on NPU native layout [N/32, K/32, 32, 32]
+                const size_t current_k = k_base + i;
+                const size_t current_n = row;
+
+                const size_t n_chunk = current_n / 32;
+                const size_t k_chunk = current_k / 32;
+                const size_t n_inner = current_n % 32;
+                const size_t k_inner = current_k % 32;
+
+                const size_t dst_idx = n_chunk * rknpu_strides[0] +
+                                       k_chunk * rknpu_strides[1] +
+                                       n_inner * rknpu_strides[2] +
+                                       k_inner * rknpu_strides[3];
+
+                dst[dst_idx] = val_int8;
             }
         }
-}
+    }
 }
 
 //================================================================================
