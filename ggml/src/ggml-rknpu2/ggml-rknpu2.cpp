@@ -379,7 +379,7 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
                 const int64_t k = src0->ne[1];
                 const int64_t n = src0->ne[0];
 
-                if (src0->type != GGML_TYPE_Q8_0 || ggml_n_dims(tensor) != 2 || k % 32 != 0 || n % 32 != 0) {
+                if (src0->type != GGML_TYPE_Q8_0 || ggml_n_dims(src0) != 2 || k % 32 != 0 || n % 32 != 0) {
                      GGML_LOG_ERROR("%s: unsupported weight tensor '%s' for RKNPU2\n", __func__, src0->name);
                      return GGML_STATUS_FAILED;
                 }
