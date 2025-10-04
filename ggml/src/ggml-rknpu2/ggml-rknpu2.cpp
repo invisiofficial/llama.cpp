@@ -439,7 +439,7 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
                 GGML_ASSERT(b_mem != nullptr);
 
                 // 4. Трансформируем веса с новым методом
-                ggml_rknpu2_reorder_q8_0_to_native_int8((int8_t*)b_mem->virt_addr, src0->data, k, n, d_max);
+                ggml_rknpu2_reorder_q8_0_to_native_int8((int8_t*)b_mem->virt_addr, src0->data, k, n);
 
                 // 5. Создаем и сохраняем extra
                 auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem, true, d_max};
