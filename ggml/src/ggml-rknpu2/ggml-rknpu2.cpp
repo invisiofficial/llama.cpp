@@ -476,7 +476,7 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             float * dst_data = (float *) dst->data;
             int32_t * c_virt = (int32_t *) kernel->C->virt_addr;
 
-            const float dequant_scale = (GGML_RKNPU2_INPUT_SCALE * tensor_extra->d_max) / (127.0f * 127.0f);
+            const float dequant_scale = GGML_RKNPU2_INPUT_SCALE / (127.0f * 127.0f);
 
             for (size_t j = 0; j < (size_t)m * n; j++) {
                 dst_data[j] = (float)c_virt[j] * dequant_scale;
