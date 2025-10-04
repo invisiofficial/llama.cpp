@@ -490,6 +490,7 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             // Обработка результата (матрица C): INT32 -> F32
             float * dst_data = (float *) dst->data;
             int32_t * c_virt = (int32_t *) kernel->C->virt_addr;
+            const size_t ne_dst = m * n;
 
             const float dequant_scale = (scale_act * tensor_extra->d_max) / 127.0f;
 
