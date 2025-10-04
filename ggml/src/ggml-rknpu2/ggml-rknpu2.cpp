@@ -159,46 +159,47 @@ static void ggml_rknpu2_destroy() {
 static void ggml_rknpu2_reorder_q8_0_to_native_int8(
     int8_t * dst,
     const void * src_q8_0,
-    size_t k, size_t n,
-    float d_max) {
+    size_t k, size_t n) {
 
     GGML_ASSERT(k > 0 && n > 0 && k % 32 == 0 && n % 32 == 0);
-    GGML_ASSERT(d_max > 0.0f);
 
     const size_t rknpu_strides[4] = {k / 32 * 32 * 32, 32 * 32, 32, 1};
     const auto q8_0_traits = ggml_get_type_traits(GGML_TYPE_Q8_0);
 
-    const size_t nb_per_row = k / 32;
-    const float scale_factor = 127.0f / d_max;
+    const size_t nelements = k * n;
+    std::vector<float> fdata(nelements);
+    q8_0_traits->to_float(src_q8_0, fdata.data(), nelements);
 
-    // The source tensor is laid out as [N, K]
+    // 2. Находим максимальное абсолютное значение для нормализации
+    float amax = 0.0f;
+    for (size_t i = 0; i < nelements; ++i) {
+        float val_abs = fabsf(fdata[i]);
+        if (val_abs > amax) {
+            amax = val_abs;
+        }
+    }
+    const float iscale = amax > 0.0f ? 1.0f / amax : 0.0f;
+
+    // 3. Переупорядочиваем и квантизируем в int8, нормализуя в диапазон [-1, 1]
+    // Исходный тензор Q8_0 имеет раскладку [N, K]
     for (size_t row = 0; row < n; ++row) {
-        for (size_t col_block = 0; col_block < nb_per_row; ++col_block) {
-            const size_t k_base = col_block * 32;
-            const block_q8_0 * block = (const block_q8_0 *)((const char *)src_q8_0 + (row * nb_per_row + col_block) * q8_0_traits->blck_size);
+        for (size_t col = 0; col < k; ++col) {
+            const float val_f32 = fdata[row * k + col];
+            // Нормализуем значение в диапазон [-1, 1] и затем квантизируем в int8
+            const int8_t val_int8 = (int8_t)roundf(fminf(fmaxf(val_f32 * iscale, -1.0f), 1.0f) * 127.0f);
 
-            const float d_local = ggml_fp16_to_fp32(block->d);
+            // Рассчитываем индекс в нативной раскладке NPU [N/32, K/32, 32, 32]
+            const size_t n_chunk = row / 32;
+            const size_t k_chunk = col / 32;
+            const size_t n_inner = row % 32;
+            const size_t k_inner = col % 32;
 
-            for (size_t i = 0; i < 32; ++i) {
-                const float val_f32 = block->qs[i] * d_local;
-                const int8_t val_int8 = (int8_t)roundf(fminf(fmaxf(val_f32 * scale_factor, -127.0f), 127.0f));
+            const size_t dst_idx = n_chunk * rknpu_strides[0] +
+                                   k_chunk * rknpu_strides[1] +
+                                   n_inner * rknpu_strides[2] +
+                                   k_inner * rknpu_strides[3];
 
-                // Calculate destination index based on NPU native layout [N/32, K/32, 32, 32]
-                const size_t current_k = k_base + i;
-                const size_t current_n = row;
-
-                const size_t n_chunk = current_n / 32;
-                const size_t k_chunk = current_k / 32;
-                const size_t n_inner = current_n % 32;
-                const size_t k_inner = current_k % 32;
-
-                const size_t dst_idx = n_chunk * rknpu_strides[0] +
-                                       k_chunk * rknpu_strides[1] +
-                                       n_inner * rknpu_strides[2] +
-                                       k_inner * rknpu_strides[3];
-
-                dst[dst_idx] = val_int8;
-            }
+            dst[dst_idx] = val_int8;
         }
     }
 }
@@ -443,7 +444,7 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
                 // 5. Создаем и сохраняем extra
                 auto * extra = new ggml_backend_rknpu2_tensor_extra{b_mem, true, d_max};
                 src0->extra = extra;
-            }
+            }   
 
             GGML_ASSERT(src0->extra != nullptr && "RKNPU2: weight tensor not prepared");
             auto * tensor_extra = (ggml_backend_rknpu2_tensor_extra*) src0->extra;
@@ -458,23 +459,8 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             // Подготовка активаций (матрица A): F32 -> INT8 с динамическим масштабом
             const float * src1_data = (const float *) src1->data;
             int8_t * a_virt = (int8_t *) kernel->A->virt_addr;
-            const size_t ne1 = m * k;
-
-            // 1. Находим максимальное абсолютное значение в активациях (amax)
-            float amax = 0.0f;
-            for (size_t j = 0; j < ne1; j++) {
-                float val_abs = fabsf(src1_data[j]);
-                if (val_abs > amax) {
-                    amax = val_abs;
-                }
-            }
-
-            // 2. Вычисляем динамический масштаб и квантизируем
-            const float scale_act = amax / 127.0f;
-            const float iscale_act = scale_act ? 1.0f / scale_act : 0.0f;
-
-            for (size_t j = 0; j < ne1; j++) {
-                float val = roundf(fminf(fmaxf(src1_data[j] * iscale_act, -127.0f), 127.0f));
+            for (size_t j = 0; j < (size_t)m * k; j++) {
+                float val = roundf(fminf(fmaxf(src1_data[j] * 127.0f / GGML_RKNPU2_INPUT_SCALE, -127.0f), 127.0f));
                 a_virt[j] = (int8_t)val;
             }
 
@@ -490,11 +476,10 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             // Обработка результата (матрица C): INT32 -> F32
             float * dst_data = (float *) dst->data;
             int32_t * c_virt = (int32_t *) kernel->C->virt_addr;
-            const size_t ne_dst = m * n;
 
-            const float dequant_scale = (scale_act * tensor_extra->d_max) / 127.0f;
+            const float dequant_scale = GGML_RKNPU2_INPUT_SCALE / (127.0f * 127.0f);
 
-            for (size_t j = 0; j < ne_dst; j++) {
+            for (size_t j = 0; j < (size_t)m * n; j++) {
                 dst_data[j] = (float)c_virt[j] * dequant_scale;
             }
         }
