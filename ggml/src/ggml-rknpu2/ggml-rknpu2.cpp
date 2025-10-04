@@ -463,19 +463,16 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             // 1. Находим максимальное абсолютное значение в активациях (amax)
             float amax = 0.0f;
             for (size_t j = 0; j < ne1; j++) {
-                float val_abs = fabsf(src1_data[j]);
-                if (val_abs > amax) {
-                    amax = val_abs;
-                }
+                amax = fmaxf(amax, fabsf(src1_data[j]));
             }
 
             // 2. Вычисляем динамический масштаб и квантизируем
             const float scale_act = amax / 127.0f;
-            const float iscale_act = scale_act ? 1.0f / scale_act : 0.0f;
+            const float iscale_act = 1.0f / (scale_act + 1e-6f);
 
             for (size_t j = 0; j < ne1; j++) {
-                float val = roundf(fminf(fmaxf(src1_data[j] * iscale_act, -127.0f), 127.0f));
-                a_virt[j] = (int8_t)val;
+                float val_quant = src1_data[j] * iscale_act;
+                a_virt[j] = (int8_t)roundf(fmaxf(-127.0f, fminf(127.0f, val_quant)));
             }
 
             // Установка IO-памяти
@@ -492,10 +489,10 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             int32_t * c_virt = (int32_t *) kernel->C->virt_addr;
             const size_t ne_dst = m * n;
 
-            const float dequant_scale = (scale_act * tensor_extra->d_max) / 127.0f;
+            const float scale_c = (scale_act * tensor_extra->d_max) / (127.0f * 127.0f);
 
             for (size_t j = 0; j < ne_dst; j++) {
-                dst_data[j] = (float)c_virt[j] * dequant_scale;
+                dst_data[j] = (float)c_virt[j] * scale_c;
             }
         }
     }
