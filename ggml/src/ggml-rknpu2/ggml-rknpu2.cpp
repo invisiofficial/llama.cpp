@@ -132,7 +132,7 @@ static struct ggml_rknpu2_matmul_kernel* ggml_rknpu2_matmul_kernel_create(int m,
     int ret = rknn_matmul_create(&kernel->matmul_ctx, &kernel->matmul_info, &kernel->matmul_io_attr);
     GGML_ASSERT(ret == 0);
     // TODO: Make core mask configurable
-    rknn_matmul_set_core_mask(kernel->matmul_ctx, RKNN_NPU_CORE_0_1_2);
+    rknn_matmul_set_core_mask(kernel->matmul_ctx, RKNN_NPU_CORE_ALL);
     printf("Created RKNPU2 matmul kernel: M=%d, K=%d, N=%d\n", m, k, n);
 
     kernel->A = rknn_create_mem(kernel->matmul_ctx, kernel->matmul_io_attr.A.size);
@@ -209,7 +209,7 @@ static void ggml_rknpu2_reorder_q8_0_to_native_int8(
 
 // Backend context
 struct ggml_backend_rknpu2_context {
-    int core_mask = RKNN_NPU_CORE_0_1_2;
+    int core_mask = RKNN_NPU_CORE_ALL;
 };
 
 // Tensor extra data (stores prepared weights)
