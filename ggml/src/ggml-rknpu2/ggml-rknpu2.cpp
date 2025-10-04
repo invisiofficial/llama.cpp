@@ -455,11 +455,26 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             struct ggml_rknpu2_matmul_kernel* kernel = ggml_rknpu2_matmul_kernel_create(m, k, n, RKNN_INT8_MM_INT8_TO_INT32);
             GGML_ASSERT(kernel != nullptr);
 
-            // Подготовка активаций (матрица A): F32 -> INT8
+            // Подготовка активаций (матрица A): F32 -> INT8 с динамическим масштабом
             const float * src1_data = (const float *) src1->data;
             int8_t * a_virt = (int8_t *) kernel->A->virt_addr;
-            for (size_t j = 0; j < (size_t)m * k; j++) {
-                float val = roundf(fminf(fmaxf(src1_data[j] * 127.0f / GGML_RKNPU2_INPUT_SCALE, -127.0f), 127.0f));
+            const size_t ne1 = m * k;
+
+            // 1. Находим максимальное абсолютное значение в активациях (amax)
+            float amax = 0.0f;
+            for (size_t j = 0; j < ne1; j++) {
+                float val_abs = fabsf(src1_data[j]);
+                if (val_abs > amax) {
+                    amax = val_abs;
+                }
+            }
+
+            // 2. Вычисляем динамический масштаб и квантизируем
+            const float scale_act = amax / 127.0f;
+            const float iscale_act = scale_act ? 1.0f / scale_act : 0.0f;
+
+            for (size_t j = 0; j < ne1; j++) {
+                float val = roundf(fminf(fmaxf(src1_data[j] * iscale_act, -127.0f), 127.0f));
                 a_virt[j] = (int8_t)val;
             }
 
@@ -476,9 +491,9 @@ static ggml_status ggml_backend_rknpu2_graph_compute(ggml_backend_t backend, str
             float * dst_data = (float *) dst->data;
             int32_t * c_virt = (int32_t *) kernel->C->virt_addr;
 
-            const float dequant_scale = (GGML_RKNPU2_INPUT_SCALE * tensor_extra->d_max) / (127.0f * 127.0f);
+            const float dequant_scale = (scale_act * tensor_extra->d_max) / 127.0f;
 
-            for (size_t j = 0; j < (size_t)m * n; j++) {
+            for (size_t j = 0; j < ne_dst; j++) {
                 dst_data[j] = (float)c_virt[j] * dequant_scale;
             }
         }
